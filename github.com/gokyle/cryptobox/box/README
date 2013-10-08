@@ -1,0 +1,8 @@
+cryptobox/box
+
+This is a NaCL-like implementation of a public-key cryptographic system
+using FIPS-compliant ciphers.
+
+box provides 20-year security using ECDH with the NIST P256 curve,
+and the secretbox package as the underlying symmetric encryption
+system.
