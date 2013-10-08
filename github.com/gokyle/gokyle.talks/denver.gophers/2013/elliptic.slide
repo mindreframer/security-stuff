@@ -1,0 +1,323 @@
+Elliptic Curve Cryptography
+2013 July 25
+
+Kyle Isom
+Hacker-at-Large
+@kyleisom
+
+* Introduction
+
+Part of a monthly series on [[https://leanpub.com/gocrypto][Practical Cryptography with Go]].
+
+*Today*
+
+- Refresher on PKC
+- Intro to Elliptic Curves
+- Signatures with ECDSA
+- ECIES: An elliptic curve hybrid system
+
+* Public Key Cryptography
+
+- In secret key crypto, keys are just sequences of bytes, and algorithms shuffle bits around.
+- In public-key crypto, keys are numbers, and algorithms are mathematical functions.
+- Public-key cryptorgraphy uses key pairs.
+- RSA is the "standard" public key algorithm (but there are alternatives).
+- Elliptic curve cryptography is one such alternative.
+- Confidentiality is provided by an encryption scheme (RSAES-OAEP with RSA).
+- Integrity and authentication are provided by an authentication scheme (RSASSA-PSS with RSA).
+
+* Intro to Elliptic Curves
+
+- Based on the math of elliptic curves[ECCTUT], which we won't get into.
+- Key size is related to the choice of a curve. For example, three common curves are P256, P384, and P521; these are all NIST-defined curves.
+- These curves are defined in the `crypto/elliptic` package:
+
+    import "crypto/elliptic"
+
+    var DefaultCurve = elliptic.P256()
+
+- NIST P256 provides us with an equivalent to a 3072-bit RSA key, or a 128-bit AES key.
+- There are alternative, non-NIST curves. The most common, and preferred, curve is curve 25519. This curve works a little differently, but support is in the `code.google.com/p/go.crypto/curve25519` package.
+- The standard for elliptic curve cryptography is specified in [SEC1].
+
+* Key Formats
+
+- The `crypto/elliptic` and `crypto/ecdsa` packages have slightly different key formats; we'll use the ECDSA format for our code.
+
+    type PrivateKey struct {
+        PublicKey
+        D *big.Int
+    }
+
+    type PublicKey struct {
+        elliptic.Curve
+        X, Y *big.Int // math/big multiprecision arithmetic numbers.
+    }
+
+- crypto/ecdsa's GenerateKey:
+
+    func GenerateKey(c elliptic.Curve, rand io.Reader) (priv *PrivateKey, err error)
+
+- crypto/elliptic GenerateKey:
+
+    func GenerateKey(curve Curve, rand io.Reader) (priv []byte, x, y *big.Int, err error)
+
+* Generating ECDSA Private Key
+
+    import "crypto/ecdsa"
+    import "crypto/elliptic"
+    import "crypto/rand"
+
+    var priv *ecdsa.PrivateKey
+    var curve = elliptic.P256()
+
+    func init() {
+        var err error
+
+        priv, err = ecdsa.GenerateKey(curve, rand.Reader)
+        // handle err
+    }
+
+* Signatures
+
+- With RSA, we used a signature scheme to provide authentication and integrity.
+- With ECC, it turns out the alternative Digital Signature Algorithm (DSA) can be applied to elliptic curves.
+
+- ECDSA signature: two numbers, `r` and `s`:
+
+    func Sign(rand io.Reader, priv *PrivateKey, hash []byte) (r, s *big.Int, err error)
+
+- This is a so-called "signature scheme with appendix": we provide the function a hash of the data to be signed.
+
+- An example wrapper for signing messages with ECDSA and SHA-256:
+
+    func Sign(priv *ecdsa.PrivateKey, msg []byte) (r, s *big.Int, err error) {
+        h := sha256.New()
+        h.Write(msg)
+        appendix := h.Sum(nil)
+        return ecdsa.Sign(rand.Reader, priv, appendix)
+    }
+
+* Verifying Signatures
+
+- Provide the `Verify` function with the hash of the message, `r` and `s` values, and the public key of the signing key:
+
+    func Verify(pub *PublicKey, hash []byte, r, s *big.Int) bool
+
+- An example wrapper for signing messages with ECDSA and SHA-256:
+
+    func Verify(pub *ecdsa.PublicKey, msg []byte, r, s *big.Int) bool {
+        h := sha256.New()
+        h.Write(msg)
+        appendix := h.Sum(nil)
+        return ecdsa.Verify(pub, appendix, r, s)  
+    }
+
+* Providing confidentiality
+
+- There are no EC primitives for encryption. Instead, we use a variant of the Diffie-Hellman key agreement method (ECDH) to generate a shared key.
+- We use a key derivation function to produce encryption and tagging keys.
+- There is a variant of the "Integrated Encryption Scheme" (IES) for ECC, called ECIES.
+
+* ECDH Example
+
+    const SymKeyLen = 16
+    const TagKeyLen = 32
+    const SharedKeyLen = 48 // SymKeyLen + TagKeyLen
+
+    func ECDH(prv *PrivateKey, pub *PublicKey) (sk []byte, err error) {
+        if prv.PublicKey.Curve != pub.Curve {
+            err = fmt.Errorf("ecies: curves don't match")
+            return
+        }
+
+        x, _ := pub.Curve.ScalarMult(pub.X, pub.Y, prv.D.Bytes())
+        if x == nil || (x.BitLen()+7)/8 < SharedKeyLen) {
+            err = fmt.Errorf("ecies: shared key is too large")
+            return
+        }
+
+        sk = x.Bytes()[:SharedKeyLen]
+        return
+    }
+
+* The KDF (from NIST SP 800-56)
+
+    func incCounter(ctr []byte) {
+        if ctr[3]++; ctr[3] != 0 {
+            return
+        } else if ctr[2]++; ctr[2] != 0 {
+            return
+        } else if ctr[1]++; ctr[1] != 0 {
+            return
+        } else if ctr[0]++; ctr[0] != 0 {
+            return
+        }
+        return
+    }
+
+* The KDF (from NIST SP 800-56) (cont.)
+
+    func concatKDF(hash hash.Hash, z, s1 []byte, kdLen int) (k []byte, err error) {
+        if s1 == nil {
+            s1 = make([]byte, 0)
+        }
+        
+        reps := ((kdLen + 7) * 8) / (hash.BlockSize() * 8)
+        if big.NewInt(int64(reps)).Cmp(big2To32M1) > 0 {
+            return nil, ErrKeyDataTooLong
+        }
+        
+        counter := []byte{0, 0, 0, 1}
+        k = make([]byte, 0)
+        for i := 0; i <= reps; i++ {
+            hash.Write(counter)
+            hash.Write(z)
+            hash.Write(s1)
+            k = append(k, hash.Sum(nil)...)
+            hash.Reset()
+            incCounter(counter)
+        }
+        k = k[:kdLen]
+        return
+    }
+
+* Basic overview of ECIES encryption:
+- Generate ephemeral key.
+- Generate shared key with ECDH between the recipient's public key and the ephemeral private key.
+- Use a key-derivation function to transform this shared key into our symmetric and authentication keys.
+- Use derived key for secret key encryption and authentication.
+- Pack the ephemerial public key, the ciphertext, and the message tag into a byte slice.
+- Send this to the target.
+
+My ECIES implementation: [[https://github.com/gokyle/ecies]]
+
+Let's look at a simplified version of ECIES tailored to AES-128
+with HMAC-SHA-256 message tags.
+
+
+* Generate ephemeral key.
+
+    // s1 and s2 are optional shared information; they can be nil.
+    func Encrypt(rand io.Reader, pub *PublicKey, m, s1, s2 []byte) (ct []byte, err error) {
+        R, err := GenerateKey(rand, pub.Curve, params)
+        if err != nil {
+            return
+        }
+    
+* Generate shared key with ECDH between the recipient's public key and the ephemeral private key.
+
+        hash := params.Hash()
+        z, err := ECDH(R, pub)
+        if err != nil {
+            return
+        }
+
+* Use a key-derivation function to transform this shared key into our symmetric and authentication keys.
+
+        K, err := concatKDF(hash, z, s1, SharedKeyLen)
+        if err != nil {
+            return
+        }
+        Ke := K[:params.KeyLen] // Key for encryption
+        Km := K[params.KeyLen:] // Key for decryption
+
+* Use derived keys for secret key encryption and authentication
+
+- AES-CTR and AES-CBC are two of the symmetric schemes specified in [SEC1].
+
+        // Symmetrically encrypt message with AES-128. The symEncrypt function
+        // should ensure the ciphertext length is greater than the AES block size.
+        em, err := symEncrypt(rand, Ke, m)
+        if err != nil {
+            return
+        }
+
+- HMAC-SHA is one of the message tag schemes specified in [SEC1].
+    
+        // Compute message tag with HMAC-SHA-256.
+        d := messageTag(Km, em, s2)
+    
+* Pack the ephemerial public key, the ciphertext, and the message tag into a byte slice.
+
+        Rb := elliptic.Marshal(pub.Curve, R.PublicKey.X, R.PublicKey.Y)
+        ct = make([]byte, len(Rb)+len(em)+len(d))
+        copy(ct, Rb)
+        copy(ct[len(Rb):], em)
+        copy(ct[len(Rb)+len(em):], d)
+        return
+    }
+
+* Decryption follows the opposite steps:
+
+- Unpack the ephemeral public key, ciphertext, and message tag.
+- Generate a shared key from the ephemeral public key.
+- Use the key derivation function to obtain symmetric and tagging keys.
+- Decrypt and authenticate the ciphertext.
+
+* Demo
+
+"Encrypted Netcat Clone": [[https://github.com/gokyle/enc]]
+
+* Benchmarks:
+
+- Sender: Intel Core 2 i5-3320M CPU @ 2.60GHz
+- Receiver: Raspberry Pi (ARMv6 - 800 MHz)
+- Network: 100 Mbps ethernet
+- Sending `enc.go`:
+
+    $ wc -l enc.go 
+    300 enc.go
+    $ ls -l enc.go
+    -rw-r--r--  1 kyle  kyle  5680 Jul 24 23:47 enc.go
+
+- Compare key sizes:
+
+    ~/keys$ ls -lh
+    total 16K
+    -rw------- 1 kyle kyle  381 Jul 25 00:30 ec_256.key
+    -rw-r--r-- 1 kyle kyle  286 Jul 25 00:30 ec_256.pub
+    -rw-r--r-- 1 kyle kyle 2459 Jul 25 00:30 rsa_3072.key
+    -rw-r--r-- 1 kyle kyle  633 Jul 25 00:30 rsa_3072.pub
+
+* 256-bit elliptic curve
+
+Sender:
+
+    transmitted in 6.668817ms
+
+Receiver:
+
+    received message in 286.99296ms
+    
+
+* RSA 3072-bit key
+
+Sender:
+
+    transmitted in 18.031922959s
+
+Receiver:
+
+    received message in 37.546495425s
+
+_Notice_that_the_last_message_was_received_in_ *seconds*
+
+
+* Conclusion
+
+- Elliptic curves are orders of magnitude faster than RSA.
+- Key sizes are much smaller: more efficient to transmit public keys over the network.
+- Why isn't ECC used more? Patents, until recently. (compare to ELG-E/DSA v. RSA in late 90s)
+
+* References
+
+[ECCTUT] ECC Tutorial. [[http://www.certicom.com/index.php/ecc-tutorial]]. Certicom.
+
+[ISO21] A Proposal for an ISO Standard for Public Key Encryption (version
+2.1). [[http://www.shoup.net/papers/iso-2_1.pdf]]. V. Shoup, 2001.
+
+[SEC1] Standards for Efficient Cryptography (SEC) 1: Elliptic Curve
+Cryptography. [[http://www.secg.org/download/aid-780/sec1-v2.pdf]].
+Certicom, 2009.
+

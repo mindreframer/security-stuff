@@ -1,0 +1,268 @@
+Cryptobox: A Crypto API
+2013 August 22
+
+Kyle Isom
+@kyleisom
+
+* Introduction
+
+- Developers who want to use crypto are often turned away by the difficulty of making sure it's done right.
+- Cryptobox is a set of packages modeled after [[http://nacl.cr.yp.to/][djb's NaCl]] library.
+- The aim is provide developers with a well-documented, properly-written, set of tools for proper encryption.
+
+* What are we trying to do, anyways?
+
+Most secure systems are trying to provide security for discrete chunks of data. We'll call these _messages_.
+
+We have three main objectives we're trying to satisfy:
+
+- Confidentiality: a message's contents can't be eavesdropped on by an observer.
+- Integrity: a message can't be tampered with; what the receiver gets is exactly what the sender sent.
+- Authentication: we would like some assurance that the message was sent by the sender we think sent it.
+
+Just as properly-written software needs a specification, we need a security specification. It should cover what we're protecting against, what our threats are, and under what conditions we should reasonably expect the system to remain secure. *Every* system can be broken in some way, but we can reason about what point we're comfortable with our security.
+
+* Two flavours of cryptography
+
+There are two kinds of cryptography:
+
+- Secret key: everyone shares keys and it is difficult to exchange keys securely. Secret key crypto is very fast.
+- Public key: keys have a private component and public component, very easy exchange keys. However, it's very slow.
+
+We can combine these two forms to leverage their benefits:
+
+- Use public key cryptography to exchange keys and encrypt secret keys,
+- Use secret key cryptography to actually encrypt the message.
+
+* Cryptobox: An Overview
+
+Cryptobox provides packages for two different levels of security, "secret" and "top secret".
+
+- `secretbox` provides "secret" level symmetric cryptography, and `box` provides "secret" level public-key cryptography.
+
+- `strongbox` provides "top secret" level symmetric cryptography, and `stoutbox` provides "top secret" level public-key cryptography.
+
+Keys are provided and used as simply `[]byte` values (with type aliases to help you in your code), making them easy to use in actual code.
+
+* The Cryptobox security model
+
+- Cryptobox operates on discrete messages
+- No attempt is made to provide any anonymity
+- Boxes by themselves won't prevent a message from being repeated.
+- Assume good entropy (source of random data).
+
+* An example: Alice and Bob
+
+When it is two peers communicating, we can use the normal functions provided in `box` (or `stoutbox`, as the security requirements change).
+
+Each of them would call the `GenerateKey` function:
+
+	priv, pub, ok := box.GenerateKey()
+	if !ok {
+		// Handle the error appropriately. Discard the keys.
+	}
+
+Now, both Alice and Bob have their key pair:
+
+- The `priv` value should be kept secret. This should never be distributed to anyone else.
+- The `pub` value can be given out to anybody and everybody that needs to communicate with the owner.
+
+* Seal and Open
+
+All of the cryptobox packages provide a pair of functions to secure and retrieve a message.
+
+- `Seal` will "lock" the message in a secure box,
+- `Open` will "unlock" this box, authenticate the message, and return the original message.
+
+The public-key packages also support signing the messages with a digital signature with the pair of functions
+
+- `SignAndSeal` signs the message and locks it in a box.
+- `OpenAndVerify` unlocks the box, checks the signature, and returns the original message.
+
+* Back to Alice and Bob
+
+If Alice wants to send a message to Bob, she first needs his public key. We'll say that she's retrieved it, and has it stored in `peer`.
+
+	message := []byte("Hello, world.")
+	locked, ok := box.Seal(peer, message)
+	if !ok {
+		// The sealing failed.
+	} else {
+		// Assuming conn is a net.Conn value:
+		_, err := conn.Write(locked)
+		// error handling for the write
+	}
+
+* Back to Alice and Bob
+
+Once Bob receives the message, he just needs to unlock the box with his private key:
+
+    var locked = make([]byte, MaxMessageSize)
+    n, err := conn.Read(locked)
+    if err != nil {
+        // Error handling
+    }
+    locked = locked[:n]
+    message, ok := box.Open(locked, priv)
+    if !ok {
+        // Opening the box failed.
+    }
+
+* Alice and Bob and Charlie (oh my)
+
+The `Seal` and `Open` messages assume a direct 1:1 sender-to-receiver relationship. But what about groups?
+
+Here, we'll use both `box` and `secretbox` to securely send a message. We'll assume everyone has generated their public and private keys, and we'll assume those keys are stored in `var`alice,`bob,`charlie`box.PublicKey`.
+
+Now, let's define some structures:
+
+	// SharedKey associates a public key with a box containing a secretbox key.
+	type SharedKey struct {
+		Peer PublicKey
+		Box []byte
+	}
+
+	type SecureMessage struct {
+		SharedKeys []SharedKey
+		Box []byte
+	}
+
+* Alice and Bob and Charlie (oh my)
+
+If Alice wants to send a message to Bob and Charlie, she generates a secretbox key and locks it in a box for Bob and in a box for Charlie:
+
+	func LockShared(message []byte, peerList []box.PublicKey) (*SecureMessage, bool) {
+		messageKey, ok := secretbox.GenerateKey()
+		if !ok {
+			return nil, false
+		}
+		
+		var sm SecureMessage
+		for _, peer := range peerList {
+			sBox, ok := box.Seal(peer, messageKey)
+			if !ok {
+				return nil, false
+			}
+			sm.SharedKeys = append(sm.SharedKeys, SharedKey{peer, sBox})
+		}
+	
+		sm.Box, ok = secretbox.Seal(message, messageKey)
+		return &sm, ok
+	}
+
+* Alice and Bob and Charlie (oh my)
+
+If Charlie wants to read this message, he checks the `SharedKey` fields for his public key and gets the message key from there:
+
+	func OpenShared(sm *SecureMessage, priv box.PrivateKey, pub box.PublicKey) ([]byte, bool) {
+		var messageKey []byte
+
+		for _, shared := range sm.SharedKeys {
+			if bytes.Equal(shared.Peer, pub) {
+				messageKey, ok := box.Open(shared.Box, priv)
+				if !ok {
+					return nil, false
+				}
+				break
+			}
+		}
+		if messageKey == nil {
+			return nil, false
+		}
+		return secretbox.Open(sm.Box, messageKey)
+	}
+
+* How fast is it?
+
+Test machine is a quad-core 2.6 GHz i5 running OpenBSD.
+
+	go version devel +037a28ab0725 Thu Aug 22 12:13:54 2013 +0900 openbsd/amd64
+
+The "secret" level packages:
+
+	PASS
+	BenchmarkUnsignedSeal        500           6863606 ns/op
+	BenchmarkSignAndSeal         200           9317677 ns/op
+	BenchmarkUnsignedOpen        500           5226215 ns/op
+	BenchmarkOpenSigned          100          14092175 ns/op
+	BenchmarkSharedKey           500           5003339 ns/op
+	ok      github.com/gokyle/cryptobox/box 15.066s
+	PASS
+	BenchmarkSeal      		   10000            204980 ns/op
+	BenchmarkOpen      		   10000            206254 ns/op
+	ok      github.com/gokyle/cryptobox/secretbox   4.163s
+
+* How fast is it? 
+
+Test machine is a quad-core 2.6 GHz i5 running OpenBSD.
+
+	go version devel +037a28ab0725 Thu Aug 22 12:13:54 2013 +0900 openbsd/amd64
+
+The "top secret" level packages:
+
+	PASS
+	BenchmarkUnsignedSeal         20          96284535 ns/op
+	BenchmarkSignAndSeal          10         145859044 ns/op
+	BenchmarkUnsignedOpen         50          49549263 ns/op
+	BenchmarkOpenSigned           10         163035000 ns/op
+	BenchmarkSharedKey            50          50151581 ns/op
+	ok      github.com/gokyle/cryptobox/stoutbox    17.962s
+	PASS
+	BenchmarkSeal      		   10000            177209 ns/op
+	BenchmarkOpen      		   10000            166309 ns/op
+	ok      github.com/gokyle/cryptobox/strongbox   3.482s
+
+- The "top secret" security comes at a price: `stoutbox` is roughly 10x slower than `box`.
+
+* The developer's role
+
+Cryptobox is a featureful toolkit, but it doesn't do everything. Particularly, developers are responsible for
+
+- Ensuring messages don't repeat,
+- Providing good entropy,
+- Securing private and secret keys,
+- Implementing proper security measures throughout the site.
+
+* Under the hood
+
+box uses secretbox as the base. Remember our three objectives?
+
+- Confidentiality: secretbox uses AES-128 in CTR mode for secrecy.
+- Integrity and authenticity: HMAC-SHA-256 message tags are used to cover both integrity and authenticity.
+
+When `box` locks a message, it uses the same `SharedKey` mechanism to build a secretbox key. For performance and higher-security, box uses elliptic curves on the NIST P256 curve. Locking is done using an ephemeral key, which can also be used for forward secrecy.
+
+Go's standard library has all the underlying packages that are needed for this, which means Cryptobox doesn't have any external dependencies.
+
+* Writing cryptographic code
+
+Writing cryptographic code is tricky. Most of the time, cryptographic systems aren't attacked via their ciphers, but through side-channels. Care has to be taken to avoid leaking additional information as much as possible.
+
+The `crypto/subtle` package has functions for comparing values in a constant time. Cryptobox makes heavy use of this.
+
+Another gotcha is in the case where decryption is done before checking the message tag; this also leaks information attackers can (and have) exploited.
+
+* Ensuring correctness
+
+It's particularly important to have a solid test suite when writing cryptographic code and systems: use tests to validate assumptions, and to ensure the converse.
+
+Some test examples:
+
+- A message that is encrypted should be decryptable to recover the original message.
+- An attacker shouldn't be able to use a different key to decrypt the message.
+- Furthermore, if an attacker changes even single a bit in the key, the decryption should fail.
+- If an attacker changes a bit in the message, the decryption should fail.
+
+* Road map
+
+- In the near future, support for signatures will be added so that a message can be signed without locking it.
+- At some point, some of the public-key box formats will be tweaked to make porting to other languages easier.
+- There are partially-completed ports to C and Python; these should be finished up.
+- The GCM cipher mode needs to be ported over to Go; this will improve performance.
+- Build in support for shared boxes.
+
+* Links
+
+- The cryptobox project has its [[http://cryptobox.tyrfingr.is][own site]]; there's an in-progress [[http://cryptobox.tyrfingr.is/cryptobox.pdf][paper describing the project]], as well.
+- Github: [[https://github.com/gokyle/cryptobox]]
+- Godoc: [[http://godoc.org/github.com/gokyle/cryptobox]]

@@ -1,0 +1,278 @@
+Public Key Cryptography
+2013 June 24
+
+Kyle Isom
+Hacker-at-Large
+@kyleisom
+
+* Introduction
+
+Part of a monthly series on [[https://leanpub.com/gocrypto][Practical Cryptography with Go]].
+
+*Today*
+
+- What is Public Key cryptography?
+- Encryption with RSA
+- Signatures with RSA
+- Hybrid Cryptographic Systems
+
+* Public Key Cryptography
+
+- In secret key crypto, keys are just sequences of bytes, and algorithms shuffle bits around.
+- In public-key crypto, keys are numbers, and algorithms are mathematical functions.
+- Public-key cryptorgraphy uses key pairs.
+- RSA is the "standard" public key algorithm (but there are alternatives).
+
+* RSA Keys
+
+- Alice generates a key pair, and gives Bob the public part of the key.
+- Alice keeps the private component of the key secret.
+- Bob encrypts a message using Alice's public key.
+- Alice decrypts the message using her private key.
+
+_Public_and_Secret_Key_Size_Comparisons:_
+
+The NIST's recommendations:
+
+- 128-bit secret key -> 3072-bit RSA key
+- 192-bit secret key -> 7680-bit RSA key
+- 256-bit secret key -> 15360-bit RSA key
+
+* Generating RSA Keys
+
+In this talk, we'll use 128-bit security, so all of the keys will be 3072-bit keys.
+
+    import "crypto/rand"
+    import "crypto/rsa"
+
+    const RSAKeySize = 3072
+    func GenerateKey() (key rsa.PrivateKey, err error) {
+        return rsa.GenerateKey(rand.Reader, RSAKeySize)
+    }
+
+* Encrypting with RSA
+
+- We can't just use "vanilla" RSA. There are some attacks on this.
+- We use the RSA encryption scheme called _OAEP_.
+
+Encrypting and decrypting with RSAES-OAEP:
+
+    import "crypto/rand"
+    import "crypto/rsa"
+    import "crypto/sha256"
+
+    func Encrypt(pub *rsa.PublicKey, pt []byte) (ct []byte, err error) {
+        hash := sha256.New()
+        ct, err = rsa.EncryptOAEP(hash, rand.Reader, pub, pt, nil)
+        return
+    }
+
+    func Decrypt(priv *rsa.PrivateKey, ct []byte) (pt []byte, err error) {
+        hash := sha256.New()
+        pt, err = rsa.DecryptOAEP(hash, rand.Reader, priv, ct, nil)
+        return
+    }
+
+(The last nil argument is something called a label, which is almost never used.)
+
+* Let's run some tests on my Mac Mini...
+
+    $ go test -test.bench='.+'
+    PASS
+    BenchmarkAESKeyGeneration     500000              3044 ns/op
+    BenchmarkRSAKeyGeneration          1        7859825057 ns/op
+    BenchmarkPrecomputedRSAKey         1        3128618668 ns/op
+    BenchmarkAESHMACEncryption    100000             16417 ns/op
+    BenchmarkRSANoPCEncryption         1       10525248552 ns/op
+    BenchmarkRSAPCEncryption           1        2420310145 ns/op
+    ok          github.com/kisom/gocrypto/chapter7/bench       29.208s
+
+RSA encryption is still pretty slow even on this machine (2.0 GHz processor).
+
+* Now let's try it on a Beaglebone Black...
+
+The Beaglebone has a 1 GHz ARM processor.
+
+    $ go test -test.bench='.+'
+    PASS
+    BenchmarkAESKeyGeneration     100000              18885 ns/op
+    BenchmarkRSAKeyGeneration          1        50797179506 ns/op
+    BenchmarkPrecomputedRSAKey         1       110618133471 ns/op
+    BenchmarkAESHMACEncryption     10000             188955 ns/op
+    BenchmarkRSANoPCEncryption         1       182067145897 ns/op
+    BenchmarkRSAPCEncryption	*** Test killed: ran too long (10m0s).
+    FAIL        github.com/kisom/gocrypto/chapter7/bench        600.017s
+
+(I wanted to run this live, but it takes entirely too long.)
+
+* Digital Signatures
+
+Digital signatures are the public key cryptography analogue to
+symmetric encryption's MAC tags.
+
+- Alice signs a message with her private key.
+- Bob can verify the signature was made with Alice's private key by verifying it against her public key.
+
+Digital signatures are a very computationally expensive operation, so we sign and verify a hash of the message.
+
+* Digital Signatures in Go
+
+    import "crypto"
+
+    func Sign(priv *rsa.PrivateKey, msg []byte) (sig []byte, err error) {
+        hash := sha256.New()
+        hash.Write(msg)
+        md := hash.Sum(nil)
+        return rsa.SignPSS(rand.Reader, priv, crypto.SHA256, md, nil)
+    }
+
+    func Verify(pub *rsa.PublicKey, msg, sig []byte) (err error) {
+        hash := sha256.New()
+        hash.Write(msg)
+        md := hash.Sum(nil)
+        return rsa.VerifyPSS(pub, crypto.SHA256, md, sig, nil)
+    }
+
+* Digital Signature Benchmarks
+
+- Mac Mini
+
+    $ go test -test.bench='.+'
+    PASS
+    BenchmarkSignature               100          25924167 ns/op
+    BenchmarkVerify                 5000            305122 ns/op
+    ok          github.com/kisom/gocrypto/chapter8/pks  10.590s
+
+- Beaglebone Black
+
+    $ gotest
+    PASS
+    BenchmarkSignature         2         870536479 ns/op
+    BenchmarkVerify           10         100508037 ns/op
+    ok          github.com/kisom/gocrypto/chapter8/pks  203.265s
+
+* Digital Signatures
+
+Digital signatures are one of the great strengths of public-key
+cryptography. The ease of sharing keys, combined with certificates
+(a signed message containing the public key, some means of identifying
+the user, and other metadata), makes authenticating messages much
+more reliable than symmetric cryptography (where the key exchange
+issue remains problematic).
+
+* Message Lengths
+
+There's a limit to the length of the plaintext that can be encrypted
+with RSA; it depends on the size of the key and the hash algorithm
+used.
+
+Here's a comparison of key size, digest, and maximum message length:
+
+.html pkc/message.html
+
+* Hybrid encryption: encrypting longer messages
+
+If we want to encrypt longer messages, we can combine public-key
+and secret key cryptography:
+
+1. Alice generates a new secret key (symmetric and HMAC),
+2. encrypts message with secret key,
+3. encrypts the secret key with Bob's public key, and
+4. sends this pair to Bob.
+
+This secret key can be used per-message (such as for emails) or as
+a session key to encrypt a sequence of messages (such as is done
+with TLS).
+
+One way to encode the encrypted key and message pair is using TLV
+structures.
+
+* TLVs
+
+A TLV is a tag-length-value format for encoding messages. For
+example, given:
+
+    0001000d48656c6c6f2c20776f726c642e00020002002a
+
+with 2-byte tag and length fields; let's define tag=1 to indicate
+a string value, and tag=2 to inidicate a 16-bit unsigned integer. Often, these are packed in a "big-endian" format:
+
+- 00 01 -> 1
+- 01 00 -> 256
+
+* Decoding the example TLV-encoded message
+
+- Tag:
+
+*0001* 000d48656c6c6f2c20776f726c642e00020002002a
+
+The tag = 1, so we're going to interpret the value as a string.
+
+- Length:
+
+0001 *000d* 48656c6c6f2c20776f726c642e00020002002a
+
+The length is 0x0d (in hexadecimal), which is 13 bytes. We should
+read the next 13 bytes to get our value.
+
+- Value:
+
+0001000d *48656c6c6f2c20776f726c642e* 00020002002a
+
+The value is '48656c6c6f2c20776f726c642e'.
+
+.link http://play.golang.org/p/goqD7rTJf7
+
+* Decoding a TLV:
+
+        func ReadTLV(r io.Reader) *TLV {
+        	var record TLV
+        	err := binary.Read(r, binary.BigEndian, &record.Tag)
+        	if err == io.EOF {
+        		return nil
+        	} else if err != nil {
+        		fmt.Println("\n[!] error reading TLV:", err.Error())
+        		return nil
+        	}
+        	err = binary.Read(r, binary.BigEndian, &record.Length)
+        	if err != nil {
+        		fmt.Println("\n[!] error reading TLV:", err.Error())
+        		return nil
+        	}
+        	record.Value = make([]byte, record.Length)
+        	_, err = io.ReadFull(r, record.Value)
+        	if err != nil {
+        		fmt.Println("[!] error reading TLV:", err.Error())
+        		return nil
+        	}
+        	return &record
+        }
+.link http://play.golang.org/p/X5oKcsKohd
+
+* Building a Hybrid System
+
+- [[http://godoc.org/github.com/gokyle/cryptobox/secretbox/][secretbox]]: handles AES-128 in CTR mode with HMAC-SHA-256
+- [[http://godoc.org/github.com/gokyle/tlv][tlv]]: TLV-encoding package (introduced in chapter 4 of the book)
+- [[https://github.com/gokyle/june24/tree/master/hybrid][hybrid]]: the hybrid code
+
+* Demo?
+
+go get github.com/gokyle/june24/client
+go get github.com/gokyle/june24/server
+go get github.com/gokyle/june24/keygen
+
+- Use keygen to generate a pair of keys: one set for the client, one for the server
+- Run the server, passing it the server's private key and the client's public key
+- Run the client, passing it the server's public key and the client's private key
+- The client sends a message to the server, which decrypts the message, capitalises it, encrypts this response, and sends this back to the client.
+
+
+* Conclusion
+
+Public key cryptography has its limitations (in speed and message
+length) but makes key exchange much easier.
+
+Public key cryptography can be combined with secret key cryptography
+to produce much more efficient and secure messages.
+
+Next month we'll look at an exciting alternative, elliptic curve cryptography.

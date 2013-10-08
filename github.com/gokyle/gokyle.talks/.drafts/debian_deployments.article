@@ -1,0 +1,25 @@
+Deploying Go Programs on Debian
+
+Kyle Isom
+Hacker at Large
+@kyleisom
+https://plus.google.com/107650668295010639306/posts
+http://gokyle.org
+
+* Introduction
+
+Go is an excellent systems programming language, but there isn't a
+lot of documentation on how to get that code onto a server. How do
+we deploy code? It turns out with a little bit of leg work, it is
+not very difficult to add Go programs to our Debian-based systems.
+The mechanisms described here will work on any of the Debian family
+tree, including Debian, Ubuntu, and Raspian.
+
+At a high level, there are four steps to building a deployment
+system: ensuring the program is ready to be daemonised, setting up
+the Debian packaging, writing the appropriate Makefiles, and, if one
+isn't already available, setting up the repository. The primary source
+documents that is relevant to any Debian packaging effort: is the
+[[http://www.debian.org/doc/debian-policy][Debian Policy Manual]],
+which dictates the proper method for packaging programs for a Debian
+repository.

@@ -1,0 +1,64 @@
+Adding Go Import Support to hgweb
+
+Kyle Isom
+@kyleisom
+kyle@gokyle.org
+[[http://gokyle.org]]
+
+* Introduction
+
+Perhaps you run your own hgweb instance. In this short article, I'd like to
+show how easy it is to make your hgweb instance suitable for use as a `go`get`
+target. My hgweb instance is at
+
+.link http://hg.tyrfingr.is
+
+An example repository is
+
+.link http://hg.tyrfingr.is/cachesrv
+
+Right now, you can `go`get`hg.tyrfingr.is/cachesrv` and it will work.
+
+* My Configuration
+
+I am using a copy of the "paper" theme that I made changes to. My hgweb.config
+looks like
+
+    [collections]
+    repos/ = repos/
+    
+    [web]
+    style = gopaper
+    baseurl = /
+    encoding = utf-8
+
+(Thanks, [[http://www.kamilkisiel.net][Kamil Kisiel]], for `encoding` tip!)
+
+* One line change
+
+The default view for my repos is the shortlog, so we should edit the
+`shortlog.tmpl` file in our theme directory. On my webserver, this is
+in `/usr/share/mercurial/templates/gopaper/shortlog.tmpl`. By adding
+the line
+
+    <meta name="go-import" content="hg.tyrfingr.is/{repo|escape} hg http://hg.tyrfingr.is/{repo|escape}">
+
+to the `head` section, `go`get` will now be able to use your hgweb
+server as an import target. The complete head section looks like this:
+
+    {header}
+    <title>{repo|escape}: log</title>
+    <link rel="alternate" type="application/atom+xml"
+       href="{url}atom-log" title="Atom feed for {repo|escape}" />
+    <link rel="alternate" type="application/rss+xml"
+       href="{url}rss-log" title="RSS feed for {repo|escape}" />
+    <meta name="go-import" content="hg.tyrfingr.is/{repo|escape} hg http://hg.tyrfingr.is/{repo|escape}">
+    </head>
+    <body>
+
+That's all there is to it.
+
+* TODO
+
+In the future, I'd like to be able to add support to the .hg configuration file
+to set up a Go import section, but I haven't done that yet.
