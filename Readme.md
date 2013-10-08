@@ -15,6 +15,10 @@
       NaCL-like toolkit using FIPS ciphers.
        38 commits, last change: 2013-08-26 22:17:55, 27 stars, 1 forks
 
+    gokyle/gokyle.talks:
+      Nothing to see here. Move along.
+       75 commits, last change: 2013-08-29 14:06:17, 0 stars, 0 forks
+
     jedisct1/libsodium:
       P(ortable|ackageable) NaCl-based crypto library
        537 commits, last change: 2013-10-07 19:58:06, 504 stars, 37 forks
