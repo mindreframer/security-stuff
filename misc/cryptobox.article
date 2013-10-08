@@ -1,0 +1,261 @@
+Cryptobox: A Crypto API
+2013 August 26
+
+Kyle Isom
+@kyleisom
+
+* Introduction
+
+Developers who want to use crypto are often turned away by the difficulty of making sure it's done right. They are still tasked with building systems that are secure, and are often left to figure out the security components themselves. This has the unfortunately tendency to lead to improperly-built security systems.
+
+Cryptobox is a set of packages modeled after [[http://nacl.cr.yp.to/][djb's NaCl]] library that aims to provide developers with a well-documented, properly-written, set of tools for proper encryption. It uses NIST-standard ciphers, including the NIST elliptic curves, AES, and HMAC-SHA2.
+
+The end goal is to have interoperable packages/libraries in multiple languages; the reference (and currently only complete) implementation is in Go, with ports to C and Python underway. The challenge in porting Cryptobox to languages other than Go is the difficulty in selecting appropriate cryptographic libraries. Go has outstanding cryptographic support, which also leads to the Go package having no external dependencies.
+
+* What are we trying to do, anyways?
+
+Most secure systems are trying to provide security for discrete chunks of data. We'll call these _messages_.
+
+We have three main objectives we're trying to satisfy when building secure systems:
+
+- Confidentiality: a message's contents can't be eavesdropped on by an observer. If Eve is watching the network or looking at Alice's hard drive, she shouldn't be able to read messages from Alice to Bob.
+- Integrity: a message can't be tampered with; what the receiver gets is exactly what the sender sent.
+- Authentication: we would like some assurance that the message was sent by the sender we think sent it.
+
+Just as properly-written software needs a specification, we need a security specification. It should cover what we're protecting against, what our threats are, and under what conditions we should reasonably expect the system to remain secure. *Every* system can be broken in some way, but we can reason about what point we're comfortable with our security. We codify our reasoning, expectations, and assumptions in a written specification called the _security_model_.
+
+* How does it compare to other efforts?
+
+There are, of course, other cryptographic libraries available.
+
+- OpenSSL: OpenSSL provides a number of low-level cryptographic tools, but these are easily misused. Other components are designed for the SSL protocol. Cryptobox aims to create a toolkit for building new protocols, and doesn't include any finite-field cryptography, which virtually entirely how SSL is used.
+
+- KeyCzar: KeyCzar is based on finite-field cryptographic algorithms (RSA and DSA). These algorithms are slower than the elliptic curve cryptography used by Cryptobox; ECC is also widely considered the direction that public key cryptography needs to take in order to provide security in the future.
+
+* Two flavours of cryptography
+
+There are two kinds of cryptography:
+
+- Secret key: everyone shares keys and it is difficult to exchange keys securely. Secret key crypto is very fast.
+- Public key: keys have a private component and public component, very easy exchange keys. However, it's very slow.
+
+We can combine these two forms to leverage their benefits:
+
+- Use public key cryptography to exchange keys and encrypt secret keys,
+- Use secret key cryptography to actually encrypt the message.
+
+* Cryptobox: An Overview
+
+Cryptobox provides packages for two different levels of security, "secret" and "top secret".
+
+- `secretbox` provides "secret" level symmetric cryptography, and `box` provides "secret" level public-key cryptography. The "secret" level cryptography is appropriate for messages that need to stay secure for a shorter period of time (within 20 years).
+
+- `strongbox` provides "top secret" level symmetric cryptography, and `stoutbox` provides "top secret" level public-key cryptography. The "top secret" level is appropriate for messages that need to stay secure for a much longer period of time (within 50 years). This would be appropriate, for example, for financial information or health records.
+
+Keys are provided and used as simply `[]byte` values (with type aliases to help you in your code), making them easy to use in actual code. Users don't have to worry about marshaling or parsing keys; they can be handled the same as any other `[]byte` value.
+
+The package's syntax is heavily inspired by the [[http://godoc.org/code.google.com/p/go.crypto/nacl][nacl package]].
+
+* The Cryptobox security model
+
+The [[http://cryptobox.tyrfingr.is/files/cryptobox_spec.pdf][Cryptobox specification]] details the security model that it operates under. Specifically:
+
+1. Cryptobox operates on discrete messages. As an example, all of the functions dealing with messages operate on byte slices.
+
+2. No attempt is made to provide any anonymity. Particularly, the size of messages is not disguised. A standard `box` encrypted message doesn't contain any publicly-identifiable information, but other layers may leak traffic information.
+
+3. Boxes by themselves provide no mechanism for preventing a message from being repeated. The protocol that is using CryptoBox must ensure that the exact same message isn't repeated; perhaps by including a non-repeating nonce or counter value. The proper way to do this is going to vary between systems; one system might use a database to store message sequence numbers, for example.
+
+4. It is assumed that system has a source of good entropy (source of random data). This is a dangerous assumption for the system as a whole, but it's not solveable at the Cryptobox level.
+
+* Alice and Bob
+
+When it is two peers communicating, we can use the normal functions provided in `box` (or `stoutbox`, as the security requirements change).
+
+Each of them would call the `GenerateKey` function:
+
+	priv, pub, ok := box.GenerateKey()
+	if !ok {
+		// Handle the error appropriately. Discard the keys.
+	}
+
+Now, both Alice and Bob have their key pair:
+
+- The `priv` value should be kept secret. This should never be distributed to anyone else.
+- The `pub` value can be given out to anybody and everybody that needs to communicate with the owner.
+
+All of the cryptobox packages provide a pair of functions to secure and retrieve a message.
+
+- `Seal` will "lock" the message in a secure box,
+- `Open` will "unlock" this box, authenticate the message, and return the original message.
+
+The public-key packages also support signing the messages with a digital signature with the pair of functions
+
+- `SignAndSeal` signs the message and locks it in a box.
+- `OpenAndVerify` unlocks the box, checks the signature, and returns the original message.
+
+If Alice wants to send a message to Bob, she first needs his public key. We'll say that she's retrieved it, and has it stored in `peer`.
+
+	message := []byte("Hello, world.")
+	locked, ok := box.Seal(peer, message)
+	if !ok {
+		// The sealing failed.
+	} else {
+		// Assuming conn is a net.Conn value:
+		_, err := conn.Write(locked)
+		// error handling for the write
+	}
+
+Once Bob receives the message, he just needs to unlock the box with his private key (stored in `priv`):
+
+    var locked = make([]byte, MaxMessageSize)
+    n, err := conn.Read(locked)
+    if err != nil {
+        // Error handling
+    }
+    locked = locked[:n]
+    message, ok := box.Open(locked, priv)
+    if !ok {
+        // Opening the box failed.
+    }
+
+There are also functions for just signing and verifying messages (`Sign` and `Verify`) that can be used to build protocols from the Cryptobox building blocks. There are also functions for signing and verifying keys (`SignKey` and `VerifySignedKey`). Using these as building blocks is covered in the [[http://cryptobox.tyrfingr.is/files/cryptobox_guidebook.pdf][Cryptobox Guidebook]].
+
+* Alice and Bob and Charlie (oh my)
+
+The `Seal` and `Open` messages assume a direct 1:1 sender-to-receiver relationship. But what about groups?
+
+The Cryptobox public-key packages provide a set of functions for sealing messages to multiple public keys.
+
+For example, let's assume that Alice has Bob and Charlie's public keys as bobPub and charliePub. She can seal a message to this group with
+
+	sbox, ok := box.SealShared([]byte("A secret message!"), []box.PublicKey{bobPub, charliePub})
+	if !ok {
+		// Error handling
+	} else {
+		// Assuming conn is a net.Conn value:
+		_, err := conn.Write(sbox)
+		// Check for errors on the write...
+	}
+
+Note that if Alice wants to seal the message to herself as well, she needs to add her public key to the list:
+
+	[]box.PublicKey{bobPub, charliePub, alicePub}
+
+Now, Bob can open the box with
+
+	message, ok := box.OpenShared(sbox, bobPriv, bobPub)
+	// Check for errors opening the box
+
+Similarly, Charlie can open the box with
+
+	message, ok := box.OpenShared(sbox, charliePriv, charliePub)
+	// Check for errors opening the box
+
+There are functions for signing shared messages, too, using `SignAndSealShared` and `OpenSharedAndVerify`.
+
+* How fast is it?
+
+Test machine is a octocore 3.5 GHz AMD FX(tm)-8320 running OpenBSD 5.3.
+
+	go version devel +66cd5698247b Sun Aug 18 08:11:34 2013 +1000 openbsd/amd64
+
+The "secret" level packages:
+
+	PASS
+	BenchmarkUnsignedSeal       		 500           3440800 ns/op
+	BenchmarkSignAndSeal        		 500           4609573 ns/op
+	BenchmarkUnsignedOpen       		1000           2607551 ns/op
+	BenchmarkOpenSigned         		 500           6517258 ns/op
+	BenchmarkSharedKey          		1000           2446281 ns/op
+	BenchmarkKeySigning         		2000            989206 ns/op
+	BenchmarkKeyVerification             500           3590186 ns/op
+	BenchmarkSharedUnsignedSeal          100          11146576 ns/op
+	BenchmarkSharedSignAndSeal           100          13569477 ns/op
+	BenchmarkSharedUnsignedOpen         1000           2757003 ns/op
+	BenchmarkOpenSharedSigned            500           6272596 ns/op
+	ok      github.com/gokyle/cryptobox/box 28.967s
+	PASS
+	BenchmarkSeal      				   20000             90427 ns/op
+	BenchmarkOpen      				   20000             86145 ns/op
+	ok      github.com/gokyle/cryptobox/secretbox   5.331s
+
+The "top secret" level packages:
+
+        PASS
+        BenchmarkUnsignedSeal       		  50          39854237 ns/op
+        BenchmarkSignAndSeal        		  50          59789886 ns/op
+        BenchmarkUnsignedOpen       		  50          20541857 ns/op
+        BenchmarkOpenSigned         		  20          63057905 ns/op
+        BenchmarkSharedKey           		 100          19502733 ns/op
+        BenchmarkSharedUnsignedSeal           20         100214228 ns/op
+        BenchmarkSharedSignAndSeal            20         121379566 ns/op
+        BenchmarkSharedUnsignedOpen          100          21546241 ns/op
+        BenchmarkOpenSharedSigned             20          67541864 ns/op
+        ok      github.com/gokyle/cryptobox/stoutbox    28.892s
+        PASS
+        BenchmarkSeal   			   	   20000             80755 ns/op
+        BenchmarkOpen      				   20000             77057 ns/op
+        ok      github.com/gokyle/cryptobox/strongbox   4.748s
+
+The "top secret" security comes at a price: `stoutbox` is roughly 10x slower than `box`.
+
+* The developer's role
+
+Cryptobox is a featureful toolkit, but it doesn't do everything. Particularly, developers are responsible for
+
+- Ensuring messages don't repeat: this is a problem for the underlying message, as Cryptobox only sees a byte slice.
+- Providing good entropy: this is a problem for the underlying system.
+- Securing and storing private and secret keys: of course, if the keys are compromised, the messages are compromised as well. We can mitigate this to some extent with forward secrecy, but once again, this falls outside the scope of what Cryptobox does.
+- Implementing proper security measures throughout the site: cryptography is only a small part of a secure system, and an attacker will almost always go after the weakest link.
+
+Cryptobox doesn't alleviate the need to build a proper security model; it just provides a tool for properly securing messages.
+
+* Under the hood
+
+`box` uses `secretbox` as the base. Remember our three objectives?
+
+- Confidentiality: secretbox uses AES-128 in CTR mode for secrecy.
+- Integrity and authenticity: HMAC-SHA-256 message tags are used to provide both integrity and authenticity.
+
+When `box` locks a message, it uses the same `SharedKey` mechanism to build a secretbox key. For performance and higher-security, box uses elliptic curves on the NIST P256 curve. Locking is done using an ephemeral key, which can also be used for forward secrecy.
+
+Similarly, `stoutbox` uses `strongbox` as the base. Instead of using AES-128, however, it uses AES-256. It also substitutes HMAC-SHA-384 in the message tags, and uses the NIST P521 curve.
+
+The Go standard library ships with all of the packages to implement this, which leads to Cryptobox having no external dependencies.
+
+* Writing cryptographic code
+
+Writing cryptographic code is tricky. Most of the time, cryptographic systems aren't attacked via their ciphers, but through side-channels. Care has to be taken to avoid leaking additional information as much as possible. (Un)fortunately, we have a lot of examples of where systems have been broken.
+
+The `crypto/subtle` package has functions for comparing values in a constant time. Cryptobox makes heavy use of this. A practical example of where this comes into play is message tagging (the HMAC-SHA-256). A normal `bytes.Equal` approach stops as soon as two bytes don't match. An attacker can measure the time differences between different tags and use this to recover the message underneath.
+
+Another gotcha is in the case where decryption is done before checking the message tag; this also leaks information attackers can (and have) exploited. Cryptobox verifies tags before proceeding with decryption, making an attacker's job much more difficult.
+
+* Ensuring correctness
+
+It's particularly important to have a solid test suite when writing cryptographic code and systems: use tests to validate assumptions, and to ensure the converse. For example, we can test to make sure that encrypting and decrypting a message gives us the original message. However, there's a few other tests we should be running as well:
+
+- An attacker shouldn't be able to use a different key to decrypt the message.
+- Furthermore, if an attacker changes even single a bit in the key, the decryption should fail.
+- If an attacker changes a bit in the message, the decryption should fail.
+
+The idea is to test every way an attacker might try to break our security objectives (whether by recovering the message or successfully tampering with the message), and to ensure that the system doesn't fail within the security model.
+
+Each of the Cryptobox packages ships with tests; they are run very frequently during development to ensure proper behaviour of the system. We want to constantly ensure we aren't breaking the model ourselves.
+
+* Road map
+
+- There are partially-completed ports to C and Python; these should be finished up.
+- The GCM cipher mode needs to be ported over to Go; this will improve performance.
+
+One of the key goals here is to give developers a simple API to secure messages, so care has to be taken to ensure the packages do not become more complex to use than is required. Specifically, there aren't any knobs or settings that can be changed (the only changeable setting right now is the PRNG). By choosing secure defaults and using a proper selection of a cipher suite, we ensure a developer doesn't have to choose a cipher or worry about having secure defaults.
+
+* Links
+
+If you'd like to read more on the project, feel free to stop by the  [[http://cryptobox.tyrfingr.is][Cryptobox site]]. On the site is the [[http://cryptobox.tyrfingr.is/files/cryptobox_spec.pdf][Cryptobox specification]]. I've also been working on a [[http://cryptobox.tyrfingr.is/files/cryptobox_guidebook.pdf][guidebook]] that shows developers how to use Cryptobox safely in their code, covering topics like key storage, security models, and forward secrecy. You can also look at the [[https://github.com/gokyle/cryptobox][Github page]] or check out the [[http://godoc.org/github.com/gokyle/cryptobox][Godocs]].
+
+Also, please feel free to send feedback to kyle@gokyle.net.
+
+
+
