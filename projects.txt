@@ -1,0 +1,2 @@
+https://github.com/gokyle/cryptobox.git
+https://github.com/jedisct1/libsodium.git
