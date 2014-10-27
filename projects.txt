@@ -2,3 +2,4 @@ https://github.com/ClarityServices/symmetric-encryption.git
 https://github.com/gokyle/cryptobox.git
 https://github.com/gokyle/gokyle.talks.git
 https://github.com/jedisct1/libsodium.git
+https://github.com/buth/stocker.git
