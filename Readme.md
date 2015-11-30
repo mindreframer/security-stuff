@@ -1,7 +1,11 @@
 ## [Security](http://security.stackexchange.com/)
 
 
-  - Golang
+
+### Books: 
+- [Security Engineering - A Guide to Building Dependable Distributed Systems - PDF](http://www.cl.cam.ac.uk/~rja14/book.html) 
+
+### Golang
     - [Go.crypto Package](http://godoc.org/code.google.com/p/go.crypto)
     - [Practical Cryptography with Go - book](http://book.gokyle.org/)
     - [Cryptobox](http://cryptobox.tyrfingr.is/)
@@ -13,14 +17,14 @@
       - Your best case is to use a high-level well-vetted scheme: for communication security, use TLS (or SSL); for data at rest, use GPG (or PGP). If you can't do that, use a high-level crypto library, like cryptlib, GPGME, Keyczar, or NaCL, instead of a low-level one, like OpenSSL, CryptoAPI, JCE, etc.. Thanks to Nate Lawson for this suggestion.
 
 
-## General Web apps security
+### General Web apps security
   - [nVisium - SecCasts](https://www.seccasts.com/mror)
 
 
-# DNS
+### DNS
   - [Pentesting With DNS - Ron Bowes, Google, 2014.09](https://docs.google.com/presentation/d/1HfXVJyXElzBshZ9SYNjBwJf_4MBaho6UcATTFwApfXw/preview?sle=true#slide=id.g34df6c118_289)
 
-## Videos:
+### Videos:
   - [Being Boring: A Survival Guide to Ruby Cryptography - 2013.11](http://www.confreaks.com/videos/2902-rubyconf2013-being-boring-a-survival-guide-to-ruby-cryptography)
 
 
